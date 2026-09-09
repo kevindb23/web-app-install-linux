@@ -9,6 +9,7 @@ DRY_RUN="${INSTALLER_DRY_RUN:-0}"
 
 PACKAGE_MANAGER=""
 DB_CONFIG_DIR="/etc/mysql/mysql.conf.d"
+NGINX_BACKUP_DIR="/var/backups/install-web-nginx-mysql/nginx"
 DB_SERVICE_CANDIDATES=(mysql mariadb mysqld)
 PHP_SERVICE_CANDIDATES=(php-fpm php8.3-fpm php8.2-fpm php8.1-fpm php8.0-fpm)
 PHP_PACKAGES=()
@@ -48,9 +49,19 @@ require_root() {
 command_exists() { command -v "$1" >/dev/null 2>&1; }
 
 backup_file() {
-  local file="$1"
+  local file="$1" backup_root="${2:-}" relative backup
   [[ -e "$file" ]] || return 0
-  local backup="${file}.backup.$(date +%Y%m%d%H%M%S).$$"
+  if [[ -n "$backup_root" ]]; then
+    if [[ "$file" == /etc/nginx/* ]]; then
+      relative="${file#/etc/nginx/}"
+    else
+      relative="$(basename "$file")"
+    fi
+    backup="${backup_root}/${relative}.backup.$(date +%Y%m%d%H%M%S).$$"
+    run mkdir -p "$(dirname "$backup")"
+  else
+    backup="${file}.backup.$(date +%Y%m%d%H%M%S).$$"
+  fi
   run cp -a "$file" "$backup"
   log "backed up $file to $backup"
 }
@@ -330,7 +341,7 @@ backup_default_nginx_sites() {
   for site in /etc/nginx/sites-enabled/default /etc/nginx/conf.d/default.conf; do
     [[ -e "$site" ]] || continue
     if [[ "$site" == "/etc/nginx/sites-enabled/default" ]] || grep -Eiq 'welcome to nginx|root[[:space:]]+/usr/share/nginx/html' "$site"; then
-      backup_file "$site"
+      backup_file "$site" "$NGINX_BACKUP_DIR"
       run rm -f "$site"
     else
       warn "leaving non-default Nginx site in place: $site"
@@ -338,12 +349,25 @@ backup_default_nginx_sites() {
   done
 }
 
+migrate_legacy_nginx_backups() {
+  local file destination
+  shopt -s nullglob
+  for file in /etc/nginx/sites-enabled/*.backup.* /etc/nginx/conf.d/*.backup.*; do
+    [[ -f "$file" ]] || continue
+    destination="${NGINX_BACKUP_DIR}/legacy/$(basename "$file")"
+    run mkdir -p "$(dirname "$destination")"
+    run mv "$file" "$destination"
+    log "moved legacy Nginx backup out of the include directory: $file"
+  done
+}
+
 configure_nginx() {
   local nginx_config="/etc/nginx/conf.d/custom-php.conf"
   log "configuring Nginx for $WEB_ROOT"
   run mkdir -p /etc/nginx/conf.d
+  migrate_legacy_nginx_backups
   backup_default_nginx_sites
-  [[ ! -f "$nginx_config" ]] || backup_file "$nginx_config"
+  [[ ! -f "$nginx_config" ]] || backup_file "$nginx_config" "$NGINX_BACKUP_DIR"
   if [[ "$DRY_RUN" == "1" ]]; then
     printf '[dry-run] write %s\n' "$nginx_config"
   else

@@ -22,6 +22,7 @@ assert_contains "$SCRIPT" 'Welcome to custom page'
 assert_contains "$SCRIPT" '[[ "$site" == "/etc/nginx/sites-enabled/default" ]]'
 assert_contains "$SCRIPT" 'pacman -Syu --noconfirm'
 assert_contains "$SCRIPT" 'mariadb-server mariadb'
+assert_contains "$SCRIPT" 'migrate_legacy_nginx_backups'
 if grep -Fq 'WITH GRANT OPTION' "$SCRIPT"; then
   fail "grant must not include WITH GRANT OPTION"
 fi
@@ -61,5 +62,13 @@ configure_mysql
 configure_mysql
 backup_count="$(find "$DB_CONFIG_DIR" -maxdepth 1 -name '99-custom-remote.cnf.backup.*' | wc -l)"
 [[ "$backup_count" -eq 0 ]] || fail "managed database config was backed up unnecessarily"
+
+nginx_site="$tmp_dir/etc/nginx/sites-enabled/default"
+nginx_backup_dir="$tmp_dir/nginx-backups"
+mkdir -p "$(dirname "$nginx_site")"
+printf 'server {}\n' > "$nginx_site"
+backup_file "$nginx_site" "$nginx_backup_dir"
+[[ "$(find "$nginx_backup_dir" -type f -name 'default.backup.*' | wc -l)" -eq 1 ]] || fail "Nginx backup was not moved outside the include directory"
+[[ "$(find "$(dirname "$nginx_site")" -maxdepth 1 -name 'default.backup.*' | wc -l)" -eq 0 ]] || fail "Nginx backup remains in the include directory"
 
 printf 'PASS: installer contract\n'
